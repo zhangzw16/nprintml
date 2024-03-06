@@ -4,9 +4,10 @@ import pathlib
 import typing
 
 import argparse_formatter
+import pandas as pd
 
 from nprintml import pipeline
-from nprintml.util import format_handlers, FileAccessType, NumericRangeType
+from nprintml.util import format_handlers, FileAccessType, NumericRangeType, DirectoryAccessType
 
 from . import AutoML
 
@@ -70,6 +71,32 @@ class Learn(pipeline.Step):
                  "(default: %(default)s)",
         )
 
+        # args for train / test split
+        group_parser.add_argument(
+            '--learn_split_file',
+            metavar='FILE',
+            type=FileAccessType(os.R_OK),
+            help="path to train/test split file",
+        )
+        group_parser.add_argument(
+            '--train_dir',
+            metavar='DIR',
+            type=DirectoryAccessType(ext='.pcap'),
+            help="directory where train pcaps are stored",
+        )
+        group_parser.add_argument(
+            '--test_dir',
+            metavar='DIR',
+            type=DirectoryAccessType(ext='.pcap'),
+            help="directory where test pcaps are stored",
+        )
+        group_parser.add_argument(
+            '--root_dir',
+            metavar='DIR',
+            type=DirectoryAccessType(),
+            help="root directory",
+        )
+
         # below %(prog)s will refer to subcommand -- not what we want
         base_program = 'python -m nprintml' if parser.prog.endswith('.py') else parser.prog
 
@@ -96,6 +123,7 @@ class Learn(pipeline.Step):
 
         parser.set_defaults(
             features_file=None,
+            learn_split_file=None,
         )
 
     def __pre__(self, parser, args, results):
@@ -109,7 +137,10 @@ class Learn(pipeline.Step):
             results.features = reader(args.features_file)
 
     def __call__(self, args, results):
-        learn = AutoML(results.features, args.outdir / 'model')
+
+        split_file = self.gen_train_test_split_file(args)
+
+        learn = AutoML(results.features, args.outdir / 'model', split_file)
 
         learn(
             test_size=args.test_size,
@@ -123,3 +154,27 @@ class Learn(pipeline.Step):
             graphs_path=learn.graphs_path,
             models_path=learn.models_path,
         )
+
+    def gen_train_test_split_file(self, args):
+        """Generate train/test split file"""
+        if args.train_dir and args.test_dir:
+            learn_split_file = pd.DataFrame(columns=['file', 'train_test_label'])
+            for (pcap_dir, label) in ((args.train_dir, 'train'), (args.test_dir, 'test')):
+                for pcap_path in pcap_dir.rglob('*.pcap'):
+                    root_path = args.pcap_dir[0] if len(args.pcap_dir) > 0 else args.root_dir
+                    pcap_file = pcap_path.relative_to(root_path)
+                    file_name = str(pcap_file)[:-5]  # remove .pcap extension
+                    new_row = pd.DataFrame({'file': [file_name], 'train_test_label': [label]})
+                    learn_split_file = pd.concat([learn_split_file, new_row], ignore_index=True)
+        elif args.learn_split_file:
+            try:
+                reader = format_handlers.get_reader(args.learn_split_file)
+            except NotImplementedError:
+                subparser = args.__subparser__
+                subparser.error(f"unsupported file type: {args.learn_split_file}")
+
+            learn_split_file = reader(args.learn_split_file)
+        else:
+            subparser = args.__subparser__
+            subparser.error(f"missing required argument: (--learn_split_file) or (--train_dir and --test_dir)")
+        return learn_split_file

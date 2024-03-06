@@ -68,9 +68,10 @@ class AutoML:
 
     VERBOSITY = 1
 
-    def __init__(self, data, outpath):
+    def __init__(self, data, outpath, split_file=None):
         self.data = data
         self.outpath = outpath
+        self.split_file = split_file
 
     @property
     def graphs_path(self):
@@ -83,7 +84,10 @@ class AutoML:
     def __call__(self, test_size=TEST_SIZE, eval_metric=EVAL_METRIC, quality=QUALITY,
                  time_limit=TIME_LIMIT, verbosity=VERBOSITY):
         """Train, test, and evaluate models."""
-        (train_data, test_data) = train_test_split(self.data, test_size=test_size)
+        if self.split_file is not None:
+            (train_data, test_data) = self.train_test_split_by_file()
+        else:
+            (train_data, test_data) = train_test_split(self.data, test_size=test_size)
         predictor = self.train(train_data, eval_metric, quality, time_limit,
                                verbosity=verbosity)
         self.test(predictor, test_data)
@@ -123,6 +127,28 @@ class AutoML:
         """Evaluate models on the test set and write the results to file."""
         leaderboard = predictor.leaderboard(test_data, silent=True)
         leaderboard.set_index('model').sort_index().to_csv(self.outpath / 'leaderboard.csv')
+
+    def train_test_split_by_file(self):
+        """Split the data into train and test using the split file.
+        Split file format is a pd.DataFrame of two columns: 'file' and 'train_test_label'
+        """
+        # 将split_file的索引设置为'file'列
+        split_file = self.split_file.copy()
+        split_file.set_index('file', inplace=True)
+
+        # 将self.data与split_file合并，添加'train_test_label'列
+        data_with_labels = self.data.join(split_file)
+
+        # 根据'train_test_label'列的值将数据分割为训练集和测试集
+        train_data = data_with_labels[data_with_labels['train_test_label'] == 'train']
+        test_data = data_with_labels[data_with_labels['train_test_label'] == 'test']
+
+        # 删除'train_test_label'列
+        train_data = train_data.drop(columns=['train_test_label'])
+        test_data = test_data.drop(columns=['train_test_label'])
+
+        return (train_data, test_data)
+
 
     def graph_all(self, predictor, test_data):
         """Generate ROC, PR and confusion matrix graphs for the
